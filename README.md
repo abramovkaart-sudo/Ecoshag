@@ -6,6 +6,6 @@
 Запуск Ollama с разрешением для домена:
 
 ```bash
-launchctl setenv OLLAMA_ORIGINS "https://ekoshag.ru,https://www.ekoshag.ru"
+launchctl setenv OLLAMA_ORIGINS "https://ecoshag.ru,https://www.ecoshag.ru"
 ollama pull qwen3:4b
 ```
