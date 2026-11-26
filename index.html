@@ -138,6 +138,7 @@ button{cursor:pointer}
       <div class="status-row"><span class="dot" id="dot"></span><span id="statusText">Проверяю локальный ИИ…</span></div>
       <label class="small" for="model">Модель</label>
       <select id="model"><option value="">—</option></select>
+      <div class="small" id="modelHint" style="color:#F0C998"></div>
       <div class="small">Ollama: <span class="mono" id="hostLabel"></span></div>
       <div class="small">Запросы идут прямо из браузера в Ollama на этом компьютере. Сайт данные не получает.</div>
       <button class="link-btn" id="changeHost">Изменить адрес Ollama</button>
@@ -253,7 +254,7 @@ button{cursor:pointer}
     }).join('');
   }
   // Reasoning models (qwen3, deepseek-r1, qwq) may emit "...</think>answer", sometimes without the opening tag.
-  const isThinker = (m) => /qwen3|deepseek-r1|qwq/i.test(m || '');
+  const isThinker = (m) => /qwen3|deepseek-r1|qwq/i.test(m || '') && !/instruct/i.test(m || '');
   function visibleText(raw, done) {
     const end = raw.lastIndexOf('</think>');
     if (end >= 0) return raw.slice(end + 8).trimStart();
@@ -334,7 +335,7 @@ button{cursor:pointer}
       <ol>
         <li>Запустите Ollama (приложение в «Программах» или <code>ollama serve</code>).</li>
         <li>Разрешите этот сайт, в Терминале: <code>launchctl setenv OLLAMA_ORIGINS "${esc(origin)}"</code>, затем перезапустите Ollama.</li>
-        <li>Скачайте модель: <code>ollama pull qwen3:4b</code>.</li>
+        <li>Скачайте модель: <code>ollama pull qwen3:4b-instruct-2507-q4_K_M</code>.</li>
         <li>Откройте сайт в Chrome; если браузер спросит доступ к локальной сети — разрешите.</li>
       </ol>
       <div style="margin-top:10px"><button class="btn-retry" style="height:36px;padding:0 14px;border-radius:8px;border:none;background:#1F6B4F;color:#fff">Проверить снова</button></div>`;
@@ -342,11 +343,18 @@ button{cursor:pointer}
     return c;
   }
 
+  function updateModelHint() {
+    $('modelHint').textContent = isThinker(model)
+      ? 'Эта модель всегда «размышляет» перед ответом — в 5–10 раз медленнее. Быстрее: ollama pull qwen3:4b-instruct-2507-q4_K_M'
+      : '';
+  }
+
   function renderHeader() {
     const p = cur();
     $('title').value = p.name; $('kind').textContent = p.kind;
     $('pCount').textContent = p.messages.length;
     $('pModel').textContent = model || '—';
+    updateModelHint();
   }
   function renderAll() { renderProjects(); renderHeader(); renderFeed(); }
   function scrollDown() { const f = $('feed'); f.scrollTop = f.scrollHeight; }
@@ -361,9 +369,9 @@ button{cursor:pointer}
       const data = await r.json();
       const names = (data.models || []).map(m => m.name);
       const sel = $('model'); sel.innerHTML = '';
-      if (!names.length) sel.innerHTML = '<option value="">нет моделей — ollama pull qwen3:4b</option>';
+      if (!names.length) sel.innerHTML = '<option value="">нет моделей — ollama pull qwen3:4b-instruct-2507-q4_K_M</option>';
       names.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.append(o); });
-      if (!names.includes(model)) model = names.find(n => n.startsWith('qwen')) || names[0] || '';
+      if (!names.includes(model) || (isThinker(model) && names.some(n => /instruct/i.test(n)))) model = names.find(n => /qwen.*instruct/i.test(n)) || names.find(n => n.startsWith('qwen')) || names[0] || '';
       sel.value = model; store.set('ek.model', model);
       online = true;
       $('dot').className = 'dot ok';
