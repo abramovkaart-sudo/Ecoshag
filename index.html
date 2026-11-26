@@ -238,7 +238,15 @@ button{cursor:pointer}
       return html;
     }).join('');
   }
-  const stripThink = (t) => t.replace(/<think>[\s\S]*?(<\/think>|$)/g, '').trimStart();
+  // Reasoning models (qwen3, deepseek-r1, qwq) may emit "...</think>answer", sometimes without the opening tag.
+  const isThinker = (m) => /qwen3|deepseek-r1|qwq/i.test(m || '');
+  function visibleText(raw, done) {
+    const end = raw.lastIndexOf('</think>');
+    if (end >= 0) return raw.slice(end + 8).trimStart();
+    if (/^\s*<think>/.test(raw)) return done ? raw.replace(/^\s*<think>/, '').trimStart() : '';
+    if (isThinker(model) && !done) return '';
+    return raw.trimStart();
+  }
 
   // ---------- render ----------
   function renderProjects() {
@@ -359,10 +367,16 @@ button{cursor:pointer}
     controller = new AbortController(); setSending(true);
     const t0 = performance.now();
     let raw = '', evals = 0, evalNs = 0;
+    const noThink = isThinker(model) ? ' /no_think' : '';
+    const history = p.messages.map(({ role, content }, i, arr) =>
+      ({ role, content: (i === arr.length - 1 && role === 'user') ? content + noThink : content }));
     const payload = (think) => JSON.stringify({
       model, stream: true, ...(think === false ? { think: false } : {}),
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...p.messages.map(({ role, content }) => ({ role, content }))]
+      messages: [{ role: 'system', content: SYSTEM_PROMPT + noThink }, ...history]
     });
+    const tick = setInterval(() => {
+      if (!visibleText(raw, false)) body.innerHTML = `<div class="typing"><span></span><span></span><span></span></div><div class="ai-meta">${raw ? 'модель размышляет' : 'жду ответ модели'} · ${((performance.now() - t0) / 1000).toFixed(0)} с</div>`;
+    }, 1000);
     try {
       let r = await fetch(host + '/api/chat', { method: 'POST', body: payload(false), signal: controller.signal });
       if (r.status === 400) r = await fetch(host + '/api/chat', { method: 'POST', body: payload(null), signal: controller.signal });
@@ -377,21 +391,21 @@ button{cursor:pointer}
           if (!line) continue;
           const j = JSON.parse(line);
           if (j.error) throw new Error(j.error);
-          if (j.message && j.message.content) { raw += j.message.content; const shown = stripThink(raw); if (shown) body.innerHTML = md(shown); scrollDown(); }
+          if (j.message && j.message.content) { raw += j.message.content; const shown = visibleText(raw, false); if (shown) body.innerHTML = md(shown); scrollDown(); }
           if (j.done) { evals = j.eval_count || 0; evalNs = j.eval_duration || 0; }
         }
       }
-      const answer = stripThink(raw) || '(пустой ответ)';
+      const answer = visibleText(raw, true) || '(пустой ответ)';
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
       const tps = evalNs ? (evals / (evalNs / 1e9)).toFixed(1) : null;
       const meta = `${model} · ${secs} с${tps ? ' · ' + tps + ' ток/с' : ''}`;
       p.messages.push({ role: 'assistant', content: answer, meta });
     } catch (e) {
-      const partial = stripThink(raw);
+      const partial = visibleText(raw, true);
       if (e.name === 'AbortError') { if (partial) p.messages.push({ role: 'assistant', content: partial, meta: 'остановлено' }); }
       else { p.messages.push({ role: 'assistant', content: '**Ошибка:** ' + e.message, meta: 'ответ не получен' }); if (e instanceof TypeError) online = false; }
     } finally {
-      controller = null; setSending(false); save(); renderAll();
+      clearInterval(tick); controller = null; setSending(false); save(); renderAll();
     }
   }
 
