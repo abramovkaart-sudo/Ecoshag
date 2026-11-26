@@ -70,6 +70,9 @@ button{cursor:pointer}
 .ai-body code{font-family:"JetBrains Mono",monospace;font-size:.92em;background:#EEF1EE;padding:1px 5px;border-radius:4px}
 .ai-body pre code{background:none;padding:0}
 .ai-body h3,.ai-body h4{margin:14px 0 6px;font-size:15px}
+.unverified{background:#FFF3E3;border-bottom:1.5px dashed #D98A2B;border-radius:3px;padding:0 2px;cursor:help}
+.unverified::after{content:'не проверено';font-size:10.5px;font-weight:600;color:#8A4208;margin-left:4px;vertical-align:1px}
+.norm-note{font-size:12px;color:#8A4208;margin-top:8px}
 .ai-meta{font-size:11.5px;color:var(--muted);margin-top:6px}
 .typing{display:inline-flex;gap:4px;padding:8px 0}
 .typing span{width:6px;height:6px;border-radius:50%;background:#9AABA2;animation:b 1.2s infinite}
@@ -189,6 +192,9 @@ button{cursor:pointer}
 
 <script>
 (() => {
+  const HISTORY_LIMIT = 12;      // сообщений истории в запросе
+  const NUM_CTX = 8192;          // окно контекста модели, токенов
+  const KEEP_ALIVE = '30m';      // держать модель в памяти между вопросами
   const SYSTEM_PROMPT = `Ты — ИИ-помощник ЭкоШаг для инженеров-экологов (решения на сброс, проекты НДС).
 Термины (всегда в этом значении):
 - НДС — нормативы допустимых сбросов веществ и микроорганизмов в водные объекты (НЕ налог на добавленную стоимость).
@@ -222,13 +228,16 @@ button{cursor:pointer}
 
   // ---------- markdown (safe subset) ----------
   const esc = (s) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  function md(src) {
+  // Ссылки на нормативные документы помечаются, пока не появится локальная нормативная база.
+  const NORM_RE = /((?:ГОСТ(?:\s?Р)?(?:\s?ИСО)?|СНиП|СанПиН|СП|ГН|МУ|РД|ПНД\s?Ф)\s?[\d][\d.:\-–/]*\d|(?:Федеральн(?:ый|ого) закон|ФЗ|Приказ|Постановлени[ея]|Распоряжени[ея])[^\n;]{0,60}?№\s?[\dА-Яа-яA-Za-z\-/]+(?:-ФЗ)?|№\s?\d+-ФЗ)/g;
+  const markNorms = (h) => h.replace(NORM_RE, '<span class="unverified" title="Ссылка не проверена по нормативной базе — сверьте с первоисточником">$1</span>');
+  function md(src, flagNorms) {
     const parts = src.split(/```/);
     return parts.map((chunk, i) => {
       if (i % 2) return '<pre><code>' + esc(chunk.replace(/^[a-zA-Z0-9_-]*\n/, '')) + '</code></pre>';
       const lines = esc(chunk).split('\n');
       let html = '', list = null, para = [];
-      const inline = (t) => t.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+      const inline = (t) => (flagNorms ? markNorms : (x) => x)(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
       const flushP = () => { if (para.length) { html += '<p>' + inline(para.join('<br>')) + '</p>'; para = []; } };
       const flushL = () => { if (list) { html += `<${list.t}>` + list.items.map(x => '<li>' + inline(x) + '</li>').join('') + `</${list.t}>`; list = null; } };
       for (const ln of lines) {
@@ -281,7 +290,12 @@ button{cursor:pointer}
     w.innerHTML = '<div class="avatar">ИИ</div><div class="ai-body"></div>';
     const body = w.querySelector('.ai-body');
     if (text === null) body.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
-    else body.innerHTML = md(text) + (meta ? `<div class="ai-meta">${esc(meta)}</div>` : '');
+    else {
+      const flagged = NORM_RE.test(text); NORM_RE.lastIndex = 0;
+      body.innerHTML = md(text, true)
+        + (flagged ? '<div class="norm-note">Ссылки на нормативные документы не проверены по базе — сверьте с первоисточником.</div>' : '')
+        + (meta ? `<div class="ai-meta">${esc(meta)}</div>` : '');
+    }
     return w;
   }
 
@@ -378,12 +392,13 @@ button{cursor:pointer}
     const body = node.querySelector('.ai-body');
     controller = new AbortController(); setSending(true);
     const t0 = performance.now();
-    let raw = '', evals = 0, evalNs = 0;
+    let raw = '', fin = null, tVisible = null;
     const noThink = isThinker(model) ? ' /no_think' : '';
-    const history = p.messages.map(({ role, content }, i, arr) =>
+    const history = p.messages.slice(-HISTORY_LIMIT).map(({ role, content }, i, arr) =>
       ({ role, content: (i === arr.length - 1 && role === 'user') ? content + noThink : content }));
     const payload = (think) => JSON.stringify({
-      model, stream: true, ...(think === false ? { think: false } : {}),
+      model, stream: true, keep_alive: KEEP_ALIVE, options: { num_ctx: NUM_CTX },
+      ...(think === false ? { think: false } : {}),
       messages: [{ role: 'system', content: SYSTEM_PROMPT + noThink }, ...history]
     });
     const tick = setInterval(() => {
@@ -403,14 +418,15 @@ button{cursor:pointer}
           if (!line) continue;
           const j = JSON.parse(line);
           if (j.error) throw new Error(j.error);
-          if (j.message && j.message.content) { raw += j.message.content; const shown = visibleText(raw, false); if (shown) body.innerHTML = md(shown); scrollDown(); }
-          if (j.done) { evals = j.eval_count || 0; evalNs = j.eval_duration || 0; }
+          if (j.message && j.message.content) {
+            raw += j.message.content; const shown = visibleText(raw, false);
+            if (shown) { if (tVisible === null) tVisible = performance.now(); body.innerHTML = md(shown, true); scrollDown(); }
+          }
+          if (j.done) fin = j;
         }
       }
       const answer = visibleText(raw, true) || '(пустой ответ)';
-      const secs = ((performance.now() - t0) / 1000).toFixed(1);
-      const tps = evalNs ? (evals / (evalNs / 1e9)).toFixed(1) : null;
-      const meta = `${model} · ${secs} с${tps ? ' · ' + tps + ' ток/с' : ''}`;
+      const meta = timingMeta(t0, tVisible, fin);
       p.messages.push({ role: 'assistant', content: answer, meta });
     } catch (e) {
       const partial = visibleText(raw, true);
@@ -419,6 +435,16 @@ button{cursor:pointer}
     } finally {
       clearInterval(tick); controller = null; setSending(false); save(); renderAll();
     }
+  }
+
+  function timingMeta(t0, tVisible, fin) {
+    const now = performance.now(), sec = (ms) => (ms / 1000).toFixed(1);
+    const parts = [model, 'всего ' + sec(now - t0) + ' с'];
+    if (fin && fin.load_duration > 1e9) parts.push('загрузка модели ' + (fin.load_duration / 1e9).toFixed(1) + ' с');
+    if (fin && fin.prompt_eval_duration > 1e9) parts.push('чтение контекста ' + (fin.prompt_eval_duration / 1e9).toFixed(1) + ' с');
+    if (tVisible !== null && isThinker(model)) parts.push('до начала ответа ' + sec(tVisible - t0) + ' с');
+    if (fin && fin.eval_duration) parts.push((fin.eval_count / (fin.eval_duration / 1e9)).toFixed(0) + ' ток/с');
+    return parts.join(' · ');
   }
 
   function setSending(on) {
