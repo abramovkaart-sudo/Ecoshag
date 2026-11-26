@@ -307,7 +307,14 @@ button{cursor:pointer}
 
   function helpCard() {
     const c = document.createElement('div'); c.className = 'card warn';
-    const origin = location.origin.startsWith('http') ? location.origin : '*';
+    if (!location.origin.startsWith('http')) {
+      c.innerHTML = `<h2>Страница открыта как файл с диска</h2>
+        <div>Ollama не принимает запросы от файлов (<code>file://</code>). Запустите страницу как локальный сайт — в Терминале, в папке с index.html:</div>
+        <ol><li><code>python3 -m http.server 8080</code></li><li>Откройте <code>http://localhost:8080/index.html</code></li></ol>
+        <div style="margin-top:6px">Не разрешайте в OLLAMA_ORIGINS все сайты (<code>*</code>): тогда к модели сможет обращаться любая открытая страница.</div>`;
+      return c;
+    }
+    const origin = location.origin;
     c.innerHTML = `<h2>Нет связи с Ollama на ${esc(host)}</h2>
       <div>Чтобы этот сайт мог обращаться к локальной модели:</div>
       <ol>
